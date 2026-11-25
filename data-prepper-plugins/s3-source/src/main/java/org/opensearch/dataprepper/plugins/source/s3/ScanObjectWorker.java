@@ -263,17 +263,23 @@ public class ScanObjectWorker implements Runnable {
             if (endToEndAcknowledgementsEnabled) {
                 acknowledgementSet = acknowledgementSetManager.create((result) -> {
                     acknowledgementSetCallbackCounter.increment();
-                    // Delete only if this is positive acknowledgement
-                    if (result == true) {
-                        sourceCoordinator.completePartition(objectToProcess.get().getPartitionKey(), true);
-                        final Set<DeleteObjectRequest> deleteObjectsForPartition = objectsToDeleteForAcknowledgmentSets.get(objectToProcess.get().getPartitionKey());
-                        deleteObjectsForPartition.forEach(s3ObjectDeleteWorker::deleteS3Object);
-                        objectsToDeleteForAcknowledgmentSets.remove(objectToProcess.get().getPartitionKey());
-                    } else {
-                        LOG.debug("Did not receive positive acknowledgement, giving up partition.");
-                        sourceCoordinator.giveUpPartition(objectToProcess.get().getPartitionKey());
+                    final String partitionKey = objectToProcess.get().getPartitionKey();
+                    try {
+                        // Delete only if this is positive acknowledgement
+                        if (result == true) {
+                            sourceCoordinator.completePartition(partitionKey, true);
+                            // Only present when delete_s3_objects_on_read is enabled
+                            final Set<DeleteObjectRequest> deleteObjectsForPartition = objectsToDeleteForAcknowledgmentSets.remove(partitionKey);
+                            if (deleteObjectsForPartition != null) {
+                                deleteObjectsForPartition.forEach(s3ObjectDeleteWorker::deleteS3Object);
+                            }
+                        } else {
+                            LOG.debug("Did not receive positive acknowledgement, giving up partition.");
+                            sourceCoordinator.giveUpPartition(partitionKey);
+                        }
+                    } finally {
+                        partitionKeys.remove(partitionKey);
                     }
-                    partitionKeys.remove(objectToProcess.get().getPartitionKey());
                 }, acknowledgmentSetTimeout);
 
                 addProgressCheck(acknowledgementSet, objectToProcess.get());

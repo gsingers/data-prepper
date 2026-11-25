@@ -58,6 +58,7 @@ import java.util.stream.Stream;
 import static org.hamcrest.MatcherAssert.assertThat;
 import static org.hamcrest.Matchers.equalTo;
 import static org.hamcrest.Matchers.notNullValue;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -369,6 +370,62 @@ class S3ScanObjectWorkerTest {
         final S3ObjectReference processedObject = objectReferenceArgumentCaptor.getValue();
         assertThat(processedObject.getBucketName(), equalTo(bucket));
         assertThat(processedObject.getKey(), equalTo(objectKey));
+    }
+
+    @Test
+    void positive_acknowledgement_completes_and_releases_partition_when_acknowledgements_is_true_and_deleteS3Objects_is_false() throws IOException {
+        final String partitionKey = bucket + "|" + UUID.randomUUID();
+        final ScanObjectWorker scanObjectWorker = processOneObjectWithAcknowledgementsAndNoDelete(partitionKey);
+
+        final Consumer<Boolean> ackCallback = captureAcknowledgementCallback();
+        ackCallback.accept(true);
+
+        verify(sourceCoordinator).completePartition(partitionKey, true);
+        verify(counter).increment();
+        verify(s3ObjectDeleteWorker, never()).deleteS3Object(any());
+
+        scanObjectWorker.stop();
+        scanObjectWorker.run();
+        verify(sourceCoordinator, never()).giveUpPartition(partitionKey);
+    }
+
+    @Test
+    void acknowledgement_callback_releases_partition_when_completePartition_throws() throws IOException {
+        final String partitionKey = bucket + "|" + UUID.randomUUID();
+        final ScanObjectWorker scanObjectWorker = processOneObjectWithAcknowledgementsAndNoDelete(partitionKey);
+        doThrow(RuntimeException.class).when(sourceCoordinator).completePartition(partitionKey, true);
+
+        final Consumer<Boolean> ackCallback = captureAcknowledgementCallback();
+        assertThrows(RuntimeException.class, () -> ackCallback.accept(true));
+
+        scanObjectWorker.stop();
+        scanObjectWorker.run();
+        verify(sourceCoordinator, never()).giveUpPartition(partitionKey);
+    }
+
+    private ScanObjectWorker processOneObjectWithAcknowledgementsAndNoDelete(final String partitionKey) throws IOException {
+        when(s3SourceConfig.getAcknowledgements()).thenReturn(true);
+        when(s3SourceConfig.isDeleteS3ObjectsOnRead()).thenReturn(false);
+
+        final SourcePartition<S3SourceProgressState> partitionToProcess = SourcePartition.builder(S3SourceProgressState.class)
+                .withPartitionKey(partitionKey)
+                .withPartitionClosedCount(0L)
+                .build();
+        given(sourceCoordinator.getNextPartition(any(Function.class), eq(false))).willReturn(Optional.of(partitionToProcess));
+        doNothing().when(s3ObjectHandler).processS3Object(any(S3ObjectReference.class), eq(S3DataSelection.DATA_AND_METADATA), eq(acknowledgementSet), eq(sourceCoordinator), eq(partitionKey));
+
+        final ScanObjectWorker scanObjectWorker = createObjectUnderTest();
+        when(acknowledgementSetManager.create(any(Consumer.class), any(Duration.class))).thenReturn(acknowledgementSet);
+
+        scanObjectWorker.runWithoutInfiniteLoop();
+        verify(acknowledgementSet).complete();
+        return scanObjectWorker;
+    }
+
+    private Consumer<Boolean> captureAcknowledgementCallback() {
+        final ArgumentCaptor<Consumer> consumerArgumentCaptor = ArgumentCaptor.forClass(Consumer.class);
+        verify(acknowledgementSetManager).create(consumerArgumentCaptor.capture(), any(Duration.class));
+        return consumerArgumentCaptor.getValue();
     }
 
     @ParameterizedTest
