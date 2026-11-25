@@ -101,6 +101,46 @@ public class InMemorySourceCoordinationStoreTest {
     }
 
     @Test
+    void tryUpdateSourcePartitionItem_with_priority_calls_updateItem_of_InMemoryPartitionAccessor() {
+        final SourcePartitionStoreItem item = mock(InMemorySourcePartitionStoreItem.class);
+
+        createObjectUnderTest().tryUpdateSourcePartitionItem(item, Instant.now());
+
+        verify(inMemoryPartitionAccessor).updateItem((InMemorySourcePartitionStoreItem) item);
+    }
+
+    @Test
+    void tryUpdateSourcePartitionItem_with_null_priority_calls_updateItem_of_InMemoryPartitionAccessor() {
+        final SourcePartitionStoreItem item = mock(InMemorySourcePartitionStoreItem.class);
+
+        createObjectUnderTest().tryUpdateSourcePartitionItem(item, null);
+
+        verify(inMemoryPartitionAccessor).updateItem((InMemorySourcePartitionStoreItem) item);
+    }
+
+    @Test
+    void partition_given_up_with_priority_is_available_to_acquire_again() {
+        final InMemorySourceCoordinationStore store = new InMemorySourceCoordinationStore(new InMemoryPartitionAccessor());
+        final String sourceIdentifier = UUID.randomUUID().toString();
+        final String partitionKey = UUID.randomUUID().toString();
+        store.tryCreatePartitionItem(sourceIdentifier, partitionKey, SourcePartitionStatus.UNASSIGNED, 0L, null, false);
+
+        final Optional<SourcePartitionStoreItem> acquired = store.tryAcquireAvailablePartition(sourceIdentifier, UUID.randomUUID().toString(), Duration.ofMinutes(1));
+        assertThat(acquired.isPresent(), equalTo(true));
+        assertThat(store.tryAcquireAvailablePartition(sourceIdentifier, UUID.randomUUID().toString(), Duration.ofMinutes(1)).isPresent(), equalTo(false));
+
+        final SourcePartitionStoreItem givenUp = acquired.get();
+        givenUp.setSourcePartitionStatus(SourcePartitionStatus.UNASSIGNED);
+        givenUp.setPartitionOwner(null);
+        givenUp.setPartitionOwnershipTimeout(null);
+        store.tryUpdateSourcePartitionItem(givenUp, Instant.now());
+
+        final Optional<SourcePartitionStoreItem> reacquired = store.tryAcquireAvailablePartition(sourceIdentifier, UUID.randomUUID().toString(), Duration.ofMinutes(1));
+        assertThat(reacquired.isPresent(), equalTo(true));
+        assertThat(reacquired.get().getSourcePartitionKey(), equalTo(partitionKey));
+    }
+
+    @Test
     void tryCreatePartitionItem_for_item_that_exists_does_not_queuePartition_and_returns_false() {
         final String sourceIdentifier = UUID.randomUUID().toString();
         final String partitionKey = UUID.randomUUID().toString();

@@ -118,9 +118,13 @@ public class InMemorySourceCoordinationStore implements SourceCoordinationStore 
         }
     }
 
+    /**
+     * Used by {@code giveUpPartition}. The in-memory store requeues unassigned partitions in the order they are
+     * given up, so the priority timestamp is not used.
+     */
     @Override
     public void tryUpdateSourcePartitionItem(final SourcePartitionStoreItem updateItem, final Instant priorityForUnassignedPartitions) {
-        throw new UnsupportedOperationException();
+        tryUpdateSourcePartitionItem(updateItem);
     }
 
     @Override
